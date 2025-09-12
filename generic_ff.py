@@ -17,8 +17,13 @@ import argparse
 import logging
 from enum import Enum
 from dataclasses import dataclass
-from typing import Literal, Tuple, Optional, Sequence
+from typing import Literal, Tuple, Optional, Sequence, List
+from datetime import datetime
 
+# External libraries
+import numpy as np
+import tensorflow as tf
+import pandas as pd
 
 # ==================================================================================================
 #                                      LITERALS AND CONSTS
@@ -104,9 +109,6 @@ def arg_verbosity_level(txt: str) -> VerbosityLevel:
         raise argparse.ArgumentTypeError(f'Verbosity level {txt} not recognized available '
                                          f'values are {[e._name_ for e in VerbosityLevel]}')
 
-# ---------------------------------------------------------------------------------------------------
-#                                Config class
-
 
 @dataclass(frozen=True)
 class Config:
@@ -178,7 +180,51 @@ class Config:
         )
 
 # ==================================================================================================
-#                                         MAIN
+#                                      HELPER FUNCTIONS
+# ==================================================================================================
+
+
+def set_global_random_seed(seed: int) -> None:
+    if seed == 0:
+        seed = int(datetime.now().timestamp())
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
+
+
+def check_for_missing_columns(data: pd.DataFrame, cols: Sequence[str]) -> Sequence[str]:
+    ''' Takes a list of columns and a dataframe and then returns list of those columns that 
+     while given as argument while not present in dataframe '''
+    return [col for col in cols if col not in data.columns]
+
+
+def is_numeric(s: pd.Series) -> bool:
+    ''' For better redability of final code (why there is no s.is_numeric() :( )'''
+    return pd.api.types.is_numeric_dtype(s)
+
+
+def attempt_one_hot_encoding(data: pd.DataFrame,
+                             categorical_cols: List[str],
+                             categories: Optional[List[str]] = None
+                             ) -> pd.DataFrame:
+    if not categorical_cols:
+        return data.copy() # Using copy to be consistent with other cases in this function
+    encoded =  pd.get_dummies(data, columns=categorical_cols, dummy_na=False)
+    if not categories:
+        return encoded
+    # Add missing categories
+    for category in  categories:
+        if category not in encoded.columns:
+            encoded[category] = 0
+    # Remove extra categories
+    valid_columns: List[str] = list(data.columns) + categories 
+    to_drop = [col for col in encoded.columns if col not in valid_columns]
+    if to_drop:
+        encoded.drop(columns=to_drop, inplace=True)
+    return encoded
+    
+
+# ==================================================================================================
+#                                           MAIN
 # ==================================================================================================
 
 
