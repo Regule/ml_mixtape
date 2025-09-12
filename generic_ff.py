@@ -15,9 +15,9 @@ from __future__ import annotations
 # Basic python imports
 import argparse
 import logging
-from enum import Enum
+from enum import Enum, auto
 from dataclasses import dataclass
-from typing import Literal, Tuple, Optional, Sequence, List
+from typing import Literal, Tuple, Optional, Sequence, List, Final
 from datetime import datetime
 
 # External libraries
@@ -25,13 +25,7 @@ import numpy as np
 import tensorflow as tf
 import pandas as pd
 
-# ==================================================================================================
-#                                      LITERALS AND CONSTS
-# ==================================================================================================
-REGRESSION_ID: str = 'regression'
-BINARY_CLASSIFIER_ID: str = 'binary_classification'
-MULTI_CLASSIFIER_ID: str = 'multiclass_classification'
-TaskType = Literal[REGRESSION_ID, BINARY_CLASSIFIER_ID, MULTI_CLASSIFIER_ID]
+
 
 # ==================================================================================================
 #                                          LOGGING
@@ -50,6 +44,20 @@ class VerbosityLevel(Enum):
             VerbosityLevel.INFO: logging.INFO,
             VerbosityLevel.DEBUG: logging.DEBUG
         }[self]
+    
+    @staticmethod
+    def parse_string(txt: str)-> VerbosityLevel:
+        try:
+            return VerbosityLevel[txt.upper()]
+        except KeyError:
+            raise KeyError(f'String "{txt}" is not valid for VerbosityLevel '
+                           f'enum. Valid values are {[e.name for e in VerbosityLevel]}')
+
+    def __str__(self):
+        return self.__repr__()
+
+    def __repr__(self):
+        return f'{self.name}'
 
 # ==================================================================================================
 #                             CONFIGURATION AND ARGUMENT PARSING
@@ -104,10 +112,9 @@ def arg_int(txt: str) -> int:
 
 def arg_verbosity_level(txt: str) -> VerbosityLevel:
     try:
-        return VerbosityLevel[txt.upper()]
-    except KeyError:
-        raise argparse.ArgumentTypeError(f'Verbosity level {txt} not recognized available '
-                                         f'values are {[e._name_ for e in VerbosityLevel]}')
+        return VerbosityLevel.parse_string(txt)
+    except KeyError as e:
+        raise argparse.ArgumentTypeError(str(e))
 
 
 @dataclass(frozen=True)
@@ -207,21 +214,75 @@ def attempt_one_hot_encoding(data: pd.DataFrame,
                              categories: Optional[List[str]] = None
                              ) -> pd.DataFrame:
     if not categorical_cols:
-        return data.copy() # Using copy to be consistent with other cases in this function
-    encoded =  pd.get_dummies(data, columns=categorical_cols, dummy_na=False)
+        return data.copy()  # Using copy to be consistent with other cases in this function
+    encoded = pd.get_dummies(data, columns=categorical_cols, dummy_na=False)
     if not categories:
         return encoded
     # Add missing categories
-    for category in  categories:
+    for category in categories:
         if category not in encoded.columns:
             encoded[category] = 0
     # Remove extra categories
-    valid_columns: List[str] = list(data.columns) + categories 
+    valid_columns: List[str] = list(data.columns) + categories
     to_drop = [col for col in encoded.columns if col not in valid_columns]
     if to_drop:
         encoded.drop(columns=to_drop, inplace=True)
     return encoded
+
+# ==================================================================================================
+#                                      NETWORK BUILDING
+# ==================================================================================================
+
+class NetworkTaskType(Enum):
+    REGRESSION = auto(),
+    BINARY_CLASSIFICATION = auto(),
+    MULTICLASS_CLASSIFICATION = auto()
+
+    def  __repr__(self)-> str:
+        return f'{self.name}'
     
+    @staticmethod
+    def infer_from_data(data_out: pd.DataFrame)-> NetworkTaskType:
+
+        # If there are multiple columns it can only be regression, if there are non numeric
+        # columns an ValueError is thrown.
+        if  data_out.shape[1] > 1:
+            if any(not is_numeric(data_out[col]) for col in data_out.columns):
+                raise ValueError('Non numeric data detected for multi column output, '
+                                 ' this script can only handle classification for single '
+                                 ' column output.')
+            return NetworkTaskType.REGRESSION
+        
+        # We now that there is only a single column so we can focus on it
+        y: pd.Series = data_out.iloc[:,0]
+         
+        # If there is a single column with non numeric data this is clearly classification
+        # we only need to check if there are only two classes or more.
+        if not is_numeric(y):
+            if y.astype('category').cat.categories.size == 2:
+                return NetworkTaskType.BINARY_CLASSIFICATION
+            else:
+                return NetworkTaskType.MULTICLASS_CLASSIFICATION
+            
+        # If there is a single column with numeric value we must decide if those numers encode
+        # categories or are values for regression. We will concider numbers as category id's if
+        # values are positive integers and there is less unique numbers than some given threshold.
+        # What is important if there is a larger number, like 15 we assume that all values from
+        # 0 to 15 can be set even if it is not present.
+        CLASS_COUNT_THRESHOLD: Final[int] = 20
+        if pd.api.types.is_float_dtype(y) or any(y<0):
+            return NetworkTaskType.REGRESSION
+        class_count = max(y.nunique(dropna=True), y.max())
+        if class_count == 2:
+            return NetworkTaskType.BINARY_CLASSIFICATION
+        elif class_count < CLASS_COUNT_THRESHOLD:
+            return NetworkTaskType.MULTICLASS_CLASSIFICATION
+        else:
+            return NetworkTaskType.REGRESSION
+
+
+
+
 
 # ==================================================================================================
 #                                           MAIN
