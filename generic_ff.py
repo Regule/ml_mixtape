@@ -17,14 +17,14 @@ import argparse
 import logging
 from enum import Enum, auto
 from dataclasses import dataclass
-from typing import Literal, Tuple, Optional, Sequence, List, Final
+from typing import Literal, Tuple, Optional, Sequence, List, Final, Dict, Any
 from datetime import datetime
 
 # External libraries
 import numpy as np
 import tensorflow as tf
 import pandas as pd
-
+from sklearn.preprocessing import StandardScaler
 
 
 # ==================================================================================================
@@ -44,9 +44,9 @@ class VerbosityLevel(Enum):
             VerbosityLevel.INFO: logging.INFO,
             VerbosityLevel.DEBUG: logging.DEBUG
         }[self]
-    
+
     @staticmethod
-    def parse_string(txt: str)-> VerbosityLevel:
+    def parse_string(txt: str) -> VerbosityLevel:
         try:
             return VerbosityLevel[txt.upper()]
         except KeyError:
@@ -187,7 +187,7 @@ class Config:
         )
 
 # ==================================================================================================
-#                                      HELPER FUNCTIONS
+#                                           HELPERS
 # ==================================================================================================
 
 
@@ -209,53 +209,29 @@ def is_numeric(s: pd.Series) -> bool:
     return pd.api.types.is_numeric_dtype(s)
 
 
-def attempt_one_hot_encoding(data: pd.DataFrame,
-                             categorical_cols: List[str],
-                             categories: Optional[List[str]] = None
-                             ) -> pd.DataFrame:
-    if not categorical_cols:
-        return data.copy()  # Using copy to be consistent with other cases in this function
-    encoded = pd.get_dummies(data, columns=categorical_cols, dummy_na=False)
-    if not categories:
-        return encoded
-    # Add missing categories
-    for category in categories:
-        if category not in encoded.columns:
-            encoded[category] = 0
-    # Remove extra categories
-    valid_columns: List[str] = list(data.columns) + categories
-    to_drop = [col for col in encoded.columns if col not in valid_columns]
-    if to_drop:
-        encoded.drop(columns=to_drop, inplace=True)
-    return encoded
-
-# ==================================================================================================
-#                                      NETWORK BUILDING
-# ==================================================================================================
-
 class NetworkTaskType(Enum):
     REGRESSION = auto(),
     BINARY_CLASSIFICATION = auto(),
     MULTICLASS_CLASSIFICATION = auto()
 
-    def  __repr__(self)-> str:
+    def __repr__(self) -> str:
         return f'{self.name}'
-    
+
     @staticmethod
-    def infer_from_data(data_out: pd.DataFrame)-> NetworkTaskType:
+    def infer_from_data(data_out: pd.DataFrame) -> NetworkTaskType:
 
         # If there are multiple columns it can only be regression, if there are non numeric
         # columns an ValueError is thrown.
-        if  data_out.shape[1] > 1:
+        if data_out.shape[1] > 1:
             if any(not is_numeric(data_out[col]) for col in data_out.columns):
                 raise ValueError('Non numeric data detected for multi column output, '
                                  ' this script can only handle classification for single '
                                  ' column output.')
             return NetworkTaskType.REGRESSION
-        
+
         # We now that there is only a single column so we can focus on it
-        y: pd.Series = data_out.iloc[:,0]
-         
+        y: pd.Series = data_out.iloc[:, 0]
+
         # If there is a single column with non numeric data this is clearly classification
         # we only need to check if there are only two classes or more.
         if not is_numeric(y):
@@ -263,14 +239,14 @@ class NetworkTaskType(Enum):
                 return NetworkTaskType.BINARY_CLASSIFICATION
             else:
                 return NetworkTaskType.MULTICLASS_CLASSIFICATION
-            
+
         # If there is a single column with numeric value we must decide if those numers encode
         # categories or are values for regression. We will concider numbers as category id's if
         # values are positive integers and there is less unique numbers than some given threshold.
         # What is important if there is a larger number, like 15 we assume that all values from
         # 0 to 15 can be set even if it is not present.
         CLASS_COUNT_THRESHOLD: Final[int] = 20
-        if pd.api.types.is_float_dtype(y) or any(y<0):
+        if pd.api.types.is_float_dtype(y) or any(y < 0):
             return NetworkTaskType.REGRESSION
         class_count = max(y.nunique(dropna=True), y.max())
         if class_count == 2:
@@ -280,8 +256,201 @@ class NetworkTaskType(Enum):
         else:
             return NetworkTaskType.REGRESSION
 
+# ==================================================================================================
+#                                    DATA PREPROCESSING
+# ==================================================================================================
 
 
+class OneHotCategoryDecoder:
+
+    idx_to_category_: Dict[int, str]
+
+    def __init__(self, encoded: OneHotEncodedData) -> None:
+        for col in encoded.encoding_columns:
+            if col not in encoded.data.columns:
+                raise KeyError(f'Column {col} not present in data')
+            idx: Any = encoded.data.columns.get_loc(col)
+            if not isinstance(idx, (int, np.integer)):
+                raise ValueError('Numpy column indexes are not integers.')
+            self.idx_to_category_[int(idx)] = col
+
+    def decode(self, idx: int) -> str:
+        try:
+            return self.idx_to_category_[idx]
+        except KeyError:
+            raise KeyError(
+                f'Index {idx} not present in encoding, valid indexes f{self.idx_to_category_.keys()}')
+
+
+@dataclass
+class OneHotEncodedData:
+    data: pd.DataFrame  # Dataframe with categorical columns repleaced with encoded ones
+    encoding_columns: List[str]  # Columns generated by one hot encoding
+    # Names of original categorical columns that are no longer presend in data
+    categorical_columns: List[str]
+
+    @staticmethod
+    def encode(data: pd.DataFrame,
+               categorical_cols: List[str],
+               categories: Optional[List[str]] = None
+               ) -> OneHotEncodedData:
+        if not categorical_cols:
+            return OneHotEncodedData(data=data.copy(), encoding_columns=[], categorical_columns=categorical_cols)
+        encoded = pd.get_dummies(
+            data, columns=categorical_cols, dummy_na=False)
+        if not categories:
+            generated_columns = [
+                col for col in encoded.columns if col not in data.columns]
+            return OneHotEncodedData(data=encoded, encoding_columns=generated_columns, categorical_columns=categorical_cols)
+        # Add missing categories
+        for category in categories:
+            if category not in encoded.columns:
+                encoded[category] = 0
+        # Remove extra categories
+        valid_columns: List[str] = list(data.columns) + categories
+        to_drop = [col for col in encoded.columns if col not in valid_columns]
+        if to_drop:
+            encoded.drop(columns=to_drop, inplace=True)
+        return OneHotEncodedData(data=encoded, encoding_columns=categories, categorical_columns=categorical_cols)
+
+    @staticmethod
+    def encode_like(data: pd.DataFrame, reference: OneHotEncodedData) -> OneHotEncodedData:
+        return OneHotEncodedData.encode(data, reference.categorical_columns, reference.encoding_columns)
+
+
+class BinaryCategoryDecoder:
+
+    # Category names corresponding to encoding 0 and 1
+    category_: Tuple[str, str]
+
+    def __init__(self, data: BinaryEncodedData) -> None:
+        self.category_ = data.category
+
+    def decode(self, code: int):
+        if code not in [0, 1]:
+            raise KeyError(
+                f'Binary encoding only uses keys 0 and 1, {code} given instead')
+        return self.category_[code]
+
+
+@dataclass
+class BinaryEncodedData:
+    data: np.ndarray  # Array with 0 and 1 that indicates binary classification
+    # Category names corresponding to encoding 0 and 1
+    category: Tuple[str, str]
+    name: str  # Name of trait that is encoded
+
+    @staticmethod
+    def encode(data: pd.Series[pd.CategoricalDtype], name: str) -> BinaryEncodedData:
+        if len(data.cat.categories) != 2:
+            raise ValueError(
+                'Attempted to use binary encoding on data with more than 2 categories.')
+        encoded_data: np.ndarray = data.cat.codes.to_numpy(dtype=np.float32)
+        categories: Tuple[str, str] = (
+            data.cat.categories[0], data.cat.categories[1])
+        return BinaryEncodedData(data=encoded_data, category=categories, name=name)
+
+    @staticmethod
+    def encode_like(data: pd.Series[pd.CategoricalDtype], reference: BinaryEncodedData) -> BinaryEncodedData:
+        if len(data.cat.categories) != 2:
+            raise ValueError(
+                'Attempted to use binary encoding on data with more than 2 categories.')
+
+        # Check if category mappings are same as in reference, if they are inverted we can fix it
+        # but if categories are different we must throw an exception.
+        invert_encoding: bool = False
+        if data.cat.categories[0] != reference.category[0]:
+            if data.cat.categories[0] == reference.category[1] and data.cat.categories[1] == reference.category[0]:
+                invert_encoding = True
+            else:
+                raise ValueError(
+                    'Incompatibile categories between new data and reference.')
+
+        # Encode new data, all other fields are taken from reference.
+        encoded_data: np.ndarray = data.cat.codes.to_numpy(dtype=np.float32)
+        if invert_encoding:
+            encoded_data = 1-encoded_data
+        return BinaryEncodedData(encoded_data, reference.category, reference.name)
+
+
+@dataclass
+class InputData:
+
+    train_input: np.ndarray
+    test_input: np.ndarray
+    scaler: StandardScaler
+    columns: List[str]
+
+    @staticmethod
+    def prepare_inputs(data_train: pd.DataFrame, data_test: pd.DataFrame, input_cols: Sequence[str]) -> InputData:
+        train_raw: pd.DataFrame = data_train[list(input_cols)].copy()
+        test_raw: pd.DataFrame = data_test[list(input_cols)].copy()
+
+        categorical_cols: List[str] = [
+            col for col in input_cols if not is_numeric(train_raw[col])]
+        train_encoded: OneHotEncodedData = OneHotEncodedData.encode(
+            train_raw, categorical_cols)
+        test_encoded: OneHotEncodedData = OneHotEncodedData.encode_like(
+            test_raw, train_encoded)
+        train_np: np.ndarray = train_encoded.data.to_numpy(
+            dtype=np.float32, copy=True)
+        test_np: np.ndarray = test_encoded.data.to_numpy(
+            dtype=np.float32, copy=True)
+
+        scaler: StandardScaler = StandardScaler().fit(train_np)
+        train_np = scaler.transform(train_np)
+        test_np = scaler.transform(test_np)
+
+        return InputData(train_input=train_np,
+                         test_input=test_np,
+                         scaler=scaler,
+                         columns=list(train_encoded.data.columns))
+
+
+@dataclass
+class OutputData:
+    train_out: np.ndarray
+    test_out: np.ndarray
+    decoder: BinaryCategoryDecoder | OneHotCategoryDecoder | None
+
+    @staticmethod
+    def prepare_outputs(data_train: pd.DataFrame,
+                        data_test:  pd.DataFrame,
+                        output_cols: Sequence[str],
+                        task: NetworkTaskType) -> OutputData:
+        train_raw: pd.DataFrame = data_train[list(output_cols)].copy()
+        test_raw: pd.DataFrame = data_test[list(output_cols)].copy()
+
+        # Regression task do not require any preprocessing
+        if task == NetworkTaskType.REGRESSION:
+            train_np: np.ndarray = train_raw.to_numpy(
+                dtype=np.float32, copy=True)
+            test_np: np.ndarray = test_raw.to_numpy(
+                dtype=np.float32, copy=True)
+            return OutputData(train_np, test_np, None)
+
+        # For classification task there must be only a single output column
+        if len(output_cols) > 1:
+            raise ValueError(
+                'Classification task cannot have more than one output column.')
+        out_col = output_cols[0]
+
+        train_categorical = train_raw[out_col].astype('category')
+        test_categorical = test_raw[out_col].astype('category')
+        if len(train_categorical.cat.categories) == 2:
+            train_encoded = BinaryEncodedData.encode(
+                train_categorical, out_col)
+            test_encoded = BinaryEncodedData.encode_like(
+                test_categorical, train_encoded)
+            decoder = BinaryCategoryDecoder(train_encoded)
+            return OutputData(train_encoded.data, test_encoded.data, decoder)
+
+        # For one hot encoding we use train and test raw as OneHotEncodedData was designed for
+        # more general cases than BinaryEncodedData
+        train_encoded = OneHotEncodedData.encode(train_raw, list(output_cols))
+        test_encoded = OneHotEncodedData.encode(test_raw, list(output_cols))
+        decoder = OneHotCategoryDecoder(train_encoded)
+        return OutputData(train_encoded.data.to_numpy(dtype=np.float32), test_encoded.data.to_numpy(dtype=np.float32), decoder)
 
 
 # ==================================================================================================
