@@ -15,6 +15,7 @@ from __future__ import annotations
 # Basic python imports
 import argparse
 import logging
+import math
 from enum import Enum, auto
 from dataclasses import dataclass
 from typing import Literal, Tuple, Optional, Sequence, List, Final, Dict, Any
@@ -24,8 +25,20 @@ from datetime import datetime
 import numpy as np
 import tensorflow as tf
 import pandas as pd
+import keras as krs
 from sklearn.preprocessing import StandardScaler
-
+from keras.layers import Dense, BatchNormalization, Dropout
+# ==================================================================================================
+#                                          CONSTANS
+# ==================================================================================================
+MIN_LAYER_SIZE: Final[int] = 16
+MAX_LAYER_SIZE: Final[int] = 512
+FEATURES_TO_SIZE_FACTOR: Final[float] = 2.5
+MAX_LAYER_COUNT: Final[int] = 3
+# TODO: Name following two better
+SAMPLES_TO_LAYER_BASE: Final[int] = 1000
+SAMPLES_TO_LAYER_STEP_MULTIPLIER: Final[int] = 10
+LEARNING_RATE: float = 1e-3  # Make this argument later
 
 # ==================================================================================================
 #                                          LOGGING
@@ -381,6 +394,12 @@ class InputData:
     scaler: StandardScaler
     columns: List[str]
 
+    def get_training_sample_count(self) -> int:
+        return self.train_input.shape[0]
+
+    def get_feature_count(self) -> int:
+        return self.train_input.shape[1]
+
     @staticmethod
     def prepare_inputs(data_train: pd.DataFrame, data_test: pd.DataFrame, input_cols: Sequence[str]) -> InputData:
         train_raw: pd.DataFrame = data_train[list(input_cols)].copy()
@@ -412,6 +431,9 @@ class OutputData:
     train_out: np.ndarray
     test_out: np.ndarray
     decoder: BinaryCategoryDecoder | OneHotCategoryDecoder | None
+
+    def get_output_size(self) -> int:
+        return self.train_out.shape[0]
 
     @staticmethod
     def prepare_outputs(data_train: pd.DataFrame,
@@ -451,6 +473,82 @@ class OutputData:
         test_encoded = OneHotEncodedData.encode(test_raw, list(output_cols))
         decoder = OneHotCategoryDecoder(train_encoded)
         return OutputData(train_encoded.data.to_numpy(dtype=np.float32), test_encoded.data.to_numpy(dtype=np.float32), decoder)
+
+# ==================================================================================================
+#                                        NETWORK MODEL
+# ==================================================================================================
+
+
+class NeuralNetwork:
+
+    def __init__(self, data_in: InputData, data_out: OutputData, task: NetworkTaskType):
+        self.data_in = data_in
+        self.data_out = data_out
+        self.task = task
+
+        # We infer network architecture based on traning data size
+        feature_count = data_in.get_feature_count()
+        sample_count = data_in.get_training_sample_count()
+        output_size = data_out.get_output_size()
+        layer_sizes = NeuralNetwork.infer_architecture_from_data(
+            sample_count, feature_count)
+
+        # We create input layer
+        input_layer = krs.Input(shape=(feature_count,), name='inputs')
+
+        # Now we chain input and hidden layers, each hidden layer will have a
+        # corresponding dropout and batch normalization
+        last_layer = input_layer
+        for layer_id, layer_size in enumerate(layer_sizes, start=1):
+            last_layer = Dense(layer_size,
+                               activation='relu',
+                               name=f'dense_{layer_id}')(last_layer)
+            last_layer = BatchNormalization(
+                name=f'batch_norm_{layer_id}')(last_layer)
+            last_layer = Dropout(0.1, name=f'dropout_{layer_id}')(last_layer)
+
+        # Finally we add an output layer
+        activation: str = {NetworkTaskType.REGRESSION: 'linear',
+                           NetworkTaskType.BINARY_CLASSIFICATION: 'sigmoid',
+                           NetworkTaskType.MULTICLASS_CLASSIFICATION: 'softmax'}[task]
+        loss: str = {NetworkTaskType.REGRESSION: 'mse',
+                     NetworkTaskType.BINARY_CLASSIFICATION: 'binary_crossentropy',
+                     NetworkTaskType.MULTICLASS_CLASSIFICATION: 'categorical_crossentropy'}[task]
+        metrics: List[Any] = {NetworkTaskType.REGRESSION: ['mae'],
+                              NetworkTaskType.BINARY_CLASSIFICATION: ['accuracy', krs.metrics.AUC(name='auc')],
+                              NetworkTaskType.MULTICLASS_CLASSIFICATION: ['accuracy']}[task]
+        output_layer = Dense(output_size, activation,
+                             name='output')(last_layer)
+
+        self.model = krs.Model(
+            inputs=input_layer, outputs=output_layer, name='generic_ffn')
+        self.model.compile(optimizer=krs.optimizers.Adam(learning_rate=LEARNING_RATE),  # type: ignore
+                           loss=loss,
+                           metrics=metrics)
+
+    @staticmethod
+    def get_reasonable_batch_size(sample_count: int) -> int:
+        return int(max(32, min(256, sample_count//20)))
+
+    @staticmethod
+    def infer_architecture_from_data(sample_count: int, feature_count: int) -> List[int]:
+        # For small data there is no reason for complex networks, we will use smalles one possible.
+        if sample_count < 200:
+            return [MIN_LAYER_SIZE]
+
+        # Generate layer sizes. Layer count depend on number of samples but is not greater
+        # than MAX_LAYER_COUNT and not less than 1. Each consecutive layer is half size of
+        # pervious one but not smaller than MIN_LAYER_SIZE. Size of first layer is  calculated
+        # based on feature count.
+        base_layer_size = max(MIN_LAYER_SIZE, min(
+            MAX_LAYER_SIZE, math.floor(feature_count*FEATURES_TO_SIZE_FACTOR)))
+        sizes = [base_layer_size]
+        sample_size_per_layer_limit = SAMPLES_TO_LAYER_BASE
+        while sample_count < sample_size_per_layer_limit and len(sizes) <= MAX_LAYER_COUNT:
+            sizes.append(max(MIN_LAYER_SIZE, sizes[-1]//2))
+            sample_size_per_layer_limit *= SAMPLES_TO_LAYER_STEP_MULTIPLIER
+
+        return sizes
 
 
 # ==================================================================================================
