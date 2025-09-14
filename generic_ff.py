@@ -445,7 +445,7 @@ class OutputData:
     decoder: BinaryCategoryDecoder | OneHotCategoryDecoder | None
 
     def get_output_size(self) -> int:
-        return self.train_out.shape[0]
+        return self.train_out.shape[1]
 
     def get_category_count(self):
         return self.train_out.shape[1] if self.train_out.shape[1] > 1 else 2
@@ -635,6 +635,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         print(f'Training history will be saved to {cfg.history_out}')
     else:
         print(f'Training history will not be saved.')
+    print(f' TRAIN OUT SHAPE = {output_data.train_out.shape}')
     if not input('Proceed with training (y/n)>')=='y':
         sys.exit()    
     net.train(cfg.model_out, cfg.validation_split, cfg.epochs)
