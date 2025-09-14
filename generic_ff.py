@@ -27,6 +27,7 @@ import numpy as np
 import tensorflow as tf
 import pandas as pd
 import keras as krs
+import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
 from keras.layers import Dense, BatchNormalization, Dropout
 from keras.callbacks import ReduceLROnPlateau, EarlyStopping, ModelCheckpoint
@@ -568,6 +569,32 @@ class NeuralNetwork:
                                       shuffle=True
                                       )
 
+    def get_history(self)-> krs.callbacks.History:
+        if self.history:
+            return self.history
+        raise ValueError('Attempted to acces history before training network.')
+
+    def plot_history(self):
+        if not self.history:
+            raise ValueError('Attempted to acces history before training network.')
+        history_dict = self.history.history
+        
+        metrics = [m for m in history_dict.keys() if not m.startswith('val_')]
+
+        for metric in metrics:
+            plt.figure(figsize=(8, 5))
+            
+            plt.plot(history_dict[metric], label=f'Train {metric}')
+            if f'val_{metric}' in history_dict:
+                plt.plot(history_dict[f'val_{metric}'], label=f'Validation {metric}')
+            
+            plt.xlabel('Epochs')
+            plt.ylabel(metric.capitalize())
+            plt.title(f'Training and Validation {metric.capitalize()}')
+            plt.legend()
+            plt.grid(True)
+            plt.show()
+
     @staticmethod
     def get_reasonable_batch_size(sample_count: int) -> int:
         return int(max(32, min(256, sample_count//20)))
@@ -630,7 +657,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         print(f'Category count : {output_data.get_category_count()}')
     print(f'Train samples - {input_data.get_training_sample_count()}')
     print(f'Test samples - {input_data.get_test_sample_count()}')
-    print(f'Model will be saved to {cfg.model_out}')
     if cfg.history_out:
         print(f'Training history will be saved to {cfg.history_out}')
     else:
@@ -639,6 +665,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     if not input('Proceed with training (y/n)>')=='y':
         sys.exit()    
     net.train(cfg.model_out, cfg.validation_split, cfg.epochs)
+    net.plot_history()
+    if cfg.history_out:
+        history = pd.DataFrame(net.get_history().history)
+        history.to_csv(cfg.history_out)
 
 if __name__ == '__main__':
     main()
