@@ -16,9 +16,10 @@ from __future__ import annotations
 import argparse
 import logging
 import math
+import sys
 from enum import Enum, auto
 from dataclasses import dataclass
-from typing import Literal, Tuple, Optional, Sequence, List, Final, Dict, Any
+from typing import Tuple, Optional, Sequence, List, Final, Dict, Any
 from datetime import datetime
 
 # External libraries
@@ -211,10 +212,16 @@ def set_global_random_seed(seed: int) -> None:
     tf.random.set_seed(seed)
 
 
-def check_for_missing_columns(data: pd.DataFrame, cols: Sequence[str]) -> Sequence[str]:
-    ''' Takes a list of columns and a dataframe and then returns list of those columns that 
-     while given as argument while not present in dataframe '''
-    return [col for col in cols if col not in data.columns]
+def panic(msg: str) -> None:
+    print(str)  # Maybe log
+    sys.exit()
+
+
+def check_for_missing_columns(data: pd.DataFrame, cols: Sequence[str], filename: str) -> None:
+    missing: List[str] = [col for col in cols if col not in data.columns]
+    if missing:
+        raise KeyError(
+            f'File {filename} is missing following columns f{missing}')
 
 
 def is_numeric(s: pd.Series) -> bool:
@@ -396,6 +403,9 @@ class InputData:
 
     def get_training_sample_count(self) -> int:
         return self.train_input.shape[0]
+    
+    def get_test_sample_count(self) -> int:
+        return self.test_input.shape[0]
 
     def get_feature_count(self) -> int:
         return self.train_input.shape[1]
@@ -434,6 +444,9 @@ class OutputData:
 
     def get_output_size(self) -> int:
         return self.train_out.shape[0]
+    
+    def get_category_count(self):
+        return self.train_out.shape[0] if self.train_out.shape[0] > 1 else 2
 
     @staticmethod
     def prepare_outputs(data_train: pd.DataFrame,
@@ -556,10 +569,42 @@ class NeuralNetwork:
 # ==================================================================================================
 
 
-def main():
+def main(argv: Optional[Sequence[str]] = None) -> None:
     cfg: Config = Config.from_args()
-    print(cfg)
-    print(cfg.verbosity.to_python_logging_verbosity())
+
+    # Reading data
+    train_dataframe: pd.DataFrame = pd.read_csv(cfg.train_csv)
+    test_dataframe: pd.DataFrame = pd.read_csv(cfg.test_csv)
+
+    # Checking for missing columns
+    try:
+        check_for_missing_columns(
+            train_dataframe, cfg.input_cols, cfg.train_csv)
+        check_for_missing_columns(
+            train_dataframe, cfg.output_cols, cfg.train_csv)
+        check_for_missing_columns(
+            test_dataframe, cfg.input_cols, cfg.test_csv)
+        check_for_missing_columns(
+            test_dataframe, cfg.output_cols, cfg.test_csv)
+    except KeyError as err:
+        panic(f'Missing columns found - {err}')
+
+    task: NetworkTaskType = NetworkTaskType.infer_from_data(
+        train_dataframe[list(cfg.output_cols)])
+    input_data: InputData = InputData.prepare_inputs(
+        train_dataframe, test_dataframe, cfg.input_cols)
+    output_data: OutputData = OutputData.prepare_outputs(
+        train_dataframe, test_dataframe, cfg.output_cols, task)
+    print(f'Inferred task : {task}')
+    if task in [NetworkTaskType.BINARY_CLASSIFICATION, NetworkTaskType.MULTICLASS_CLASSIFICATION]:
+        print(f'Category count : {output_data.get_category_count()}')
+    print(f'Train samples - {input_data.get_training_sample_count()}')
+    print(f'Test samples - {input_data.get_test_sample_count()}')
+    print(f'Model will be saved to {cfg.model_out}')
+    if cfg.history_out:
+        print(f'Training history will be saved to {cfg.history_out}')
+    else:
+        print(f'Training history will not be saved.')
 
 
 if __name__ == '__main__':
