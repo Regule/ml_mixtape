@@ -29,6 +29,7 @@ import pandas as pd
 import keras as krs
 from sklearn.preprocessing import StandardScaler
 from keras.layers import Dense, BatchNormalization, Dropout
+from keras.callbacks import ReduceLROnPlateau, EarlyStopping, ModelCheckpoint
 # ==================================================================================================
 #                                          CONSTANS
 # ==================================================================================================
@@ -40,6 +41,7 @@ MAX_LAYER_COUNT: Final[int] = 3
 SAMPLES_TO_LAYER_BASE: Final[int] = 1000
 SAMPLES_TO_LAYER_STEP_MULTIPLIER: Final[int] = 10
 LEARNING_RATE: float = 1e-3  # Make this argument later
+MIN_LEARNING_RATE: float = 1e-6  # Make this argument later
 
 # ==================================================================================================
 #                                          LOGGING
@@ -283,7 +285,7 @@ class NetworkTaskType(Enum):
 
 class OneHotCategoryDecoder:
 
-    idx_to_category_: Dict[int, str]
+    idx_to_category_: Dict[int, str] = {}
 
     def __init__(self, encoded: OneHotEncodedData) -> None:
         for col in encoded.encoding_columns:
@@ -403,7 +405,7 @@ class InputData:
 
     def get_training_sample_count(self) -> int:
         return self.train_input.shape[0]
-    
+
     def get_test_sample_count(self) -> int:
         return self.test_input.shape[0]
 
@@ -444,9 +446,9 @@ class OutputData:
 
     def get_output_size(self) -> int:
         return self.train_out.shape[0]
-    
+
     def get_category_count(self):
-        return self.train_out.shape[0] if self.train_out.shape[0] > 1 else 2
+        return self.train_out.shape[1] if self.train_out.shape[1] > 1 else 2
 
     @staticmethod
     def prepare_outputs(data_train: pd.DataFrame,
@@ -494,10 +496,17 @@ class OutputData:
 
 class NeuralNetwork:
 
+    data_in: InputData
+    data_out: OutputData
+    task: NetworkTaskType
+    model: krs.Model
+    history: None | krs.callbacks.History
+
     def __init__(self, data_in: InputData, data_out: OutputData, task: NetworkTaskType):
         self.data_in = data_in
         self.data_out = data_out
         self.task = task
+        self.history = None
 
         # We infer network architecture based on traning data size
         feature_count = data_in.get_feature_count()
@@ -538,6 +547,26 @@ class NeuralNetwork:
         self.model.compile(optimizer=krs.optimizers.Adam(learning_rate=LEARNING_RATE),  # type: ignore
                            loss=loss,
                            metrics=metrics)
+
+    def train(self, model_out: str, validation_split: float, epochs: int) -> None:
+        if self.history:
+            raise ValueError(f'Attempting to train already trained network, '
+                             'this functionality is not provided by this implementation')
+        callbacks: List[krs.callbacks.Callback] = [
+            ReduceLROnPlateau(monitor='val_loss', factor=0.5,
+                              patience=0, verbose=0, min_lr=MIN_LEARNING_RATE,),
+            EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True, verbose=0),
+            ModelCheckpoint(monitor='val_loss', filepath=model_out, save_best_only=True, verbose=0)
+        ]
+        batch_size = NeuralNetwork.get_reasonable_batch_size(self.data_in.get_training_sample_count())
+        self.history = self.model.fit(self.data_in.train_input,
+                                      self.data_out.train_out,
+                                      validation_split=validation_split,
+                                      epochs=epochs,
+                                      batch_size=batch_size,
+                                      callbacks=callbacks,
+                                      shuffle=True
+                                      )
 
     @staticmethod
     def get_reasonable_batch_size(sample_count: int) -> int:
@@ -595,6 +624,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         train_dataframe, test_dataframe, cfg.input_cols)
     output_data: OutputData = OutputData.prepare_outputs(
         train_dataframe, test_dataframe, cfg.output_cols, task)
+    net: NeuralNetwork = NeuralNetwork(input_data, output_data, task)
     print(f'Inferred task : {task}')
     if task in [NetworkTaskType.BINARY_CLASSIFICATION, NetworkTaskType.MULTICLASS_CLASSIFICATION]:
         print(f'Category count : {output_data.get_category_count()}')
@@ -605,7 +635,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         print(f'Training history will be saved to {cfg.history_out}')
     else:
         print(f'Training history will not be saved.')
-
+    if not input('Proceed with training (y/n)>')=='y':
+        sys.exit()    
+    net.train(cfg.model_out, cfg.validation_split, cfg.epochs)
 
 if __name__ == '__main__':
     main()
