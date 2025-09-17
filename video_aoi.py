@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import pathlib
 import time
+import sys
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -67,6 +68,15 @@ class Config:
         return Config(
             video_path=args.video_path
         )
+
+# ==================================================================================================
+#                                         HELPERS
+# ==================================================================================================
+
+
+def panic(msg: str) -> None:
+    print(f'Critical - {msg}')
+    sys.exit()
 
 # ==================================================================================================
 #                                         VIDEO FRAME
@@ -129,7 +139,7 @@ class VideoSource:
     filename_: str  # Name of video file, used for verbose exceptions
     # Minimum time between updated in seconds (fps_limit)
     min_update_period_: float
-    frame: VideoFrame # Last frame read
+    frame: VideoFrame  # Last frame read
 
     def __init__(self, filename: str, fps_limit: int) -> None:
 
@@ -139,13 +149,14 @@ class VideoSource:
         if not self.vid_.isOpened():
             raise FileNotFoundError(
                 f'File {filename} is not valid video file.')
-        
+
         # Attempting initial capture, nr of first frame is set to 1
         capture_sucess, frame = self.vid_.read()
         if not capture_sucess:
-            raise EOFError(
-                f'Reached end of video file {self.filename_} on frame {self.frame.nr}')
-        self.frame = VideoFrame.from_ndarray(np.asarray(frame, dtype=np.uint8), 1)
+            raise Exception(
+                f'Opened file {self.filename_} sucessfuly but unable to read frames from it.')
+        self.frame = VideoFrame.from_ndarray(
+            np.asarray(frame, dtype=np.uint8), 1)
 
         # Setting FPS limit, if 0 is given no limit is set
         if fps_limit < 0:
@@ -155,8 +166,8 @@ class VideoSource:
             self.min_update_period_ = 0.0
         else:
             self.min_update_period_ = 1.0/fps_limit
-        
-    def update(self)-> None:
+
+    def update(self) -> None:
         if time.time() - self.frame.timestamp < self.min_update_period_:
             return
         self.update_frame_()
@@ -164,10 +175,15 @@ class VideoSource:
     def update_frame_(self):
         capture_sucess, frame = self.vid_.read()
         if not capture_sucess:
-            raise EOFError(
-                f'Reached end of video file {self.filename_} on frame {self.frame.nr}')
-        self.frame = VideoFrame.from_ndarray(np.asarray(frame, dtype=np.uint8), self.frame.nr+1)
-            
+            if self.frame.nr == 1:
+                raise EOFError(
+                    f'Reached end of video file {self.filename_} on frame {self.frame.nr}'
+                    ' this may indicate that an image file was opened as video source.')
+            else:
+                raise EOFError(
+                    f'Reached end of video file {self.filename_} on frame {self.frame.nr}')
+        self.frame = VideoFrame.from_ndarray(
+            np.asarray(frame, dtype=np.uint8), self.frame.nr+1)
 
 
 # ==================================================================================================
@@ -177,22 +193,27 @@ class VideoSource:
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
     cfg: Config = Config.from_args()
-    source = VideoSource(str(cfg.video_path.resolve()), 0)
 
-    # Temporary code for testing source before I write sink
-    window_name = "Video (press 'q' to quit)"
     try:
-        while True:
-            source.update()
-            cv.imshow(window_name, source.frame.data)
+        source = VideoSource(str(cfg.video_path.resolve()), 0)
 
-            # wait ~1 ms for a key; quit if 'q' is pressed
-            if cv.waitKey(1) & 0xFF == ord('q'):
-                raise KeyboardInterrupt('User pressed "q" to close GUI.')
-        
-    except (EOFError, KeyboardInterrupt) as e:
-        print(f'Display stopped, reason : {e}')
-        cv.destroyAllWindows()
+        # Temporary code for testing source before I write sink
+        window_name = "Video (press 'q' to quit)"
+        try:
+            while True:
+                source.update()
+                cv.imshow(window_name, source.frame.data)
+
+                # wait ~1 ms for a key; quit if 'q' is pressed
+                if cv.waitKey(1) & 0xFF == ord('q'):
+                    raise KeyboardInterrupt('User pressed "q" to close GUI.')
+
+        except (EOFError, KeyboardInterrupt) as e:
+            print(f'Display stopped, reason : {e}')
+            cv.destroyAllWindows()
+    except Exception as e:
+        # An exception happend that we are unable to handle
+        panic(str(e))
 
 
 if __name__ == '__main__':
