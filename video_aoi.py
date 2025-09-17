@@ -45,10 +45,23 @@ def arg_file_path(txt: str) -> pathlib.Path:
     return path
 
 
+def arg_fps(txt: str) -> int:
+    try:
+        val: int = int(txt)
+        if val < 1:
+            raise argparse.ArgumentTypeError(
+                f'FPS must be a positive value, value {val} given instead')
+        return val
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f'Unable to convert "{txt}" to valid integer')
+
+
 @dataclass(frozen=True)
 class Config:
 
     video_path: pathlib.Path  # Path to video that will be processed
+    fps_limit: int  # Maximum number of frames per second in playback, if set to zero no limit applied
 
     @staticmethod
     def from_args(argv: Optional[Sequence[str]] = None) -> Config:
@@ -60,13 +73,16 @@ class Config:
         # Declare arguments
         prsr.add_argument('--video_path', required=True,
                           type=arg_file_path, help='Path to video that will be processed')
+        prsr.add_argument('--fps_limit', default=0,
+                          type=arg_fps, help='Maximum number of frames per second in playback')
 
         # Parsing arguments
         args: argparse.Namespace = prsr.parse_args(argv)
 
         # Returning config
         return Config(
-            video_path=args.video_path
+            video_path=args.video_path,
+            fps_limit=args.fps_limit
         )
 
 # ==================================================================================================
@@ -167,7 +183,7 @@ class VideoSource:
         else:
             self.min_update_period_ = 1.0/fps_limit
 
-    def update(self) -> None:
+    def spin(self) -> None:
         if time.time() - self.frame.timestamp < self.min_update_period_:
             return
         self.update_frame_()
@@ -186,6 +202,27 @@ class VideoSource:
             np.asarray(frame, dtype=np.uint8), self.frame.nr+1)
 
 
+class SimpleDisplay:
+
+    window_name_: str  # Name of opencv window which this display will use
+    frame_: VideoFrame  # Frame that will be displayed
+
+    def __init__(self, window_name: str) -> None:
+        self.window_name_ = window_name
+
+    def __del__(self):
+        cv.destroyWindow(self.window_name_)
+
+    def spin(self):
+        cv.imshow(self.window_name_, self.frame_.data)
+
+        # wait 1 ms for a key; quit if 'q' is pressed
+        if cv.waitKey(1) & 0xFF == ord('q'):
+            raise KeyboardInterrupt('User pressed "q" to close GUI.')
+
+    def set_frame(self, frame: VideoFrame)->None:
+            self.frame_ = frame
+
 # ==================================================================================================
 #                                           MAIN
 # ==================================================================================================
@@ -195,22 +232,17 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     cfg: Config = Config.from_args()
 
     try:
-        source = VideoSource(str(cfg.video_path.resolve()), 0)
+        source: VideoSource = VideoSource(str(cfg.video_path.resolve()), cfg.fps_limit)
+        display: SimpleDisplay = SimpleDisplay('Video (press "q" to quit)')
 
-        # Temporary code for testing source before I write sink
-        window_name = "Video (press 'q' to quit)"
         try:
             while True:
-                source.update()
-                cv.imshow(window_name, source.frame.data)
-
-                # wait ~1 ms for a key; quit if 'q' is pressed
-                if cv.waitKey(1) & 0xFF == ord('q'):
-                    raise KeyboardInterrupt('User pressed "q" to close GUI.')
+                source.spin()
+                display.set_frame(source.frame)
+                display.spin()
 
         except (EOFError, KeyboardInterrupt) as e:
             print(f'Display stopped, reason : {e}')
-            cv.destroyAllWindows()
     except Exception as e:
         # An exception happend that we are unable to handle
         panic(str(e))
