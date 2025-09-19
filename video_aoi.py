@@ -176,6 +176,13 @@ class FrameProcessor:
         ''' Dummy processor simply returns a copy of source frame'''
         return frame.copy()
 
+class BGRtoGrayscale(FrameProcessor):
+
+    def process(self, frame: VideoFrame) -> VideoFrame:
+        gray = cv.cvtColor(frame.data, cv.COLOR_BGR2GRAY)
+        return VideoFrame(data=np.asarray(gray, dtype=np.uint8),
+                          timestamp=frame.timestamp,
+                          nr=frame.nr)
 
 class AOIdetector(FrameProcessor):
 
@@ -324,13 +331,15 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     source: VideoSource = VideoSource(
         str(cfg.video_path.resolve()), cfg.fps_limit)
     display: SimpleDisplay = SimpleDisplay('Video (press "q" to quit)')
+    to_grayscale: BGRtoGrayscale = BGRtoGrayscale()
     aoi_detector: AOIdetector = AOIdetector(
-        source.frame.get_size().scale(cfg.map_scale), 255)
+        source.frame.get_size().scale(cfg.map_scale), 240)
 
     try:
         while True:
             source.spin()
-            aoi_map: VideoFrame = aoi_detector.process(source.frame)
+            gray: VideoFrame = to_grayscale.process(source.frame)
+            aoi_map: VideoFrame = aoi_detector.process(gray)
             display.set_frame(aoi_map)
             display.spin()
 
