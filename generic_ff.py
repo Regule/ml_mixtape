@@ -5,6 +5,7 @@ This scripts trains a simple feed forward neural network based on given train da
 then tests it with data from test CSV. You have to give a comma separated list of input
 columns as well as outut columns. Type of task (regression or classification) as well as 
 the architecture of network are inferred from data.
+THIS WORKS
 '''
 # ==================================================================================================
 #                                             IMPORTS

@@ -4,6 +4,7 @@
 '''
 A very simple example of how to use pretrained YOLO.
 Pretrained weights may be downloaded from https://www.kaggle.com/datasets/shivam316/yolov3-weights/data
+FIXME: STILL RELYING ON TUTORIAL CODE,
 '''
 
 # ==================================================================================================

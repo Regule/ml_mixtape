@@ -7,6 +7,7 @@ analyzing. The idea is that only part that undergo change should be considered
 interesting and for other we can assume that they contain same info as last time.
 This is simillar in underlying concept to time redundancy compression algorithms
 like MPEG.
+CONCEPT FAILED BUT A LOT OF USEFULL CODE SNIPPETS - KEEP
 '''
 
 # ==================================================================================================
